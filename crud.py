@@ -1,5 +1,8 @@
 import os
+import uuid
+import shutil
 from typing import List, Optional
+from datetime import datetime
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,29 +13,29 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from dotenv import load_dotenv
-import uuid
-import shutil
 
-# Load environment
+# Load environment variables
 load_dotenv()
-
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# FastAPI setup
+# Initialize FastAPI app
 app = FastAPI()
+
+# Allow all CORS (adjust in production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True,
-    allow_methods=["*"], allow_headers=["*"]
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Database setup
+# Set up database engine and session
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
-
-# SQLAlchemy model
+# Database model
 class Company(Base):
     __tablename__ = "companies"
 
@@ -48,15 +51,12 @@ class Company(Base):
     certificate_path = Column(String(512), nullable=True)
     logo_path = Column(String(512), nullable=True)
     is_active = Column(Boolean, default=True)
-    created_at = Column(
-        TIMESTAMP, server_default=func.now(), nullable=False
-    )
+    created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
-
+# Create tables
 Base.metadata.create_all(bind=engine)
 
-
-# Pydantic schemas
+# Pydantic schema for API response
 class CompanyOut(BaseModel):
     id: int
     name: str
@@ -70,13 +70,12 @@ class CompanyOut(BaseModel):
     certificate_path: Optional[str]
     logo_path: Optional[str]
     is_active: bool
-    created_at: str
+    created_at: datetime  # datetime handled automatically by FastAPI
 
     class Config:
         orm_mode = True
 
-
-# Dependency to get DB session
+# Database session dependency
 def get_db():
     db = SessionLocal()
     try:
@@ -84,8 +83,7 @@ def get_db():
     finally:
         db.close()
 
-
-# Utility to save uploaded files
+# File saving utility
 def save_upload(file: UploadFile, folder: str) -> str:
     ext = os.path.splitext(file.filename)[1]
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -95,6 +93,23 @@ def save_upload(file: UploadFile, folder: str) -> str:
         shutil.copyfileobj(file.file, buffer)
     return path
 
+# Convert ORM company to Pydantic response
+def enrich_company_output(company: Company) -> CompanyOut:
+    return CompanyOut(
+        id=company.id,
+        name=company.name,
+        email=company.email,
+        phone=company.phone,
+        address=company.address,
+        city=company.city,
+        state=company.state,
+        country=company.country,
+        branches=company.branches.split(",") if company.branches else [],
+        certificate_path=company.certificate_path,
+        logo_path=company.logo_path,
+        is_active=company.is_active,
+        created_at=company.created_at,
+    )
 
 # Create a new company
 @app.post("/companies", response_model=CompanyOut)
@@ -110,12 +125,17 @@ def create_company(
     is_active: bool = Form(True),
     certificate: Optional[UploadFile] = File(None),
     logo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    # Check if email already exists
     if db.query(Company).filter(Company.email == email).first():
-        raise HTTPException(400, "Email already in use")
+        raise HTTPException(400, detail="Email already in use")
+
+    # Save uploaded files
     cert_path = save_upload(certificate, "uploads/certificates") if certificate else None
     logo_path = save_upload(logo, "uploads/logos") if logo else None
+
+    # Create company record
     company = Company(
         name=name,
         email=email,
@@ -127,42 +147,35 @@ def create_company(
         branches=",".join(branches),
         certificate_path=cert_path,
         logo_path=logo_path,
-        is_active=is_active
+        is_active=is_active,
     )
     db.add(company)
     db.commit()
     db.refresh(company)
-    # Convert branches back to list for response
-    company.branches = branches
-    return company
 
+    return enrich_company_output(company)
 
-# List all companies (optional filter by city header)
+# Get all companies
 @app.get("/companies", response_model=List[CompanyOut])
 def list_companies(
     x_region: Optional[str] = Depends(lambda: None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     query = db.query(Company)
     if x_region:
         query = query.filter(Company.city == x_region)
     companies = query.all()
-    for c in companies:
-        c.branches = c.branches.split(",") if c.branches else []
-    return companies
-
+    return [enrich_company_output(c) for c in companies]
 
 # Get single company
 @app.get("/companies/{company_id}", response_model=CompanyOut)
 def get_company(company_id: int, db: Session = Depends(get_db)):
     company = db.query(Company).get(company_id)
     if not company:
-        raise HTTPException(404, "Company not found")
-    company.branches = company.branches.split(",") if company.branches else []
-    return company
+        raise HTTPException(404, detail="Company not found")
+    return enrich_company_output(company)
 
-
-# Update a company
+# Update existing company
 @app.put("/companies/{company_id}", response_model=CompanyOut)
 def update_company(
     company_id: int,
@@ -177,38 +190,45 @@ def update_company(
     is_active: Optional[bool] = Form(None),
     certificate: Optional[UploadFile] = File(None),
     logo: Optional[UploadFile] = File(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     company = db.query(Company).get(company_id)
     if not company:
-        raise HTTPException(404, "Company not found")
+        raise HTTPException(404, detail="Company not found")
+
     if email and email != company.email:
         if db.query(Company).filter(Company.email == email).first():
-            raise HTTPException(400, "Email already in use")
-    for field, value in {
-        "name": name, "email": email, "phone": phone, "address": address,
-        "city": city, "state": state, "country": country, "is_active": is_active
-    }.items():
+            raise HTTPException(400, detail="Email already in use")
+
+    # Update fields
+    updates = {
+        "name": name, "email": email, "phone": phone,
+        "address": address, "city": city, "state": state,
+        "country": country, "is_active": is_active
+    }
+    for field, value in updates.items():
         if value is not None:
             setattr(company, field, value)
+
     if branches is not None:
         company.branches = ",".join(branches)
+
     if certificate:
         company.certificate_path = save_upload(certificate, "uploads/certificates")
+
     if logo:
         company.logo_path = save_upload(logo, "uploads/logos")
+
     db.commit()
     db.refresh(company)
-    company.branches = company.branches.split(",") if company.branches else []
-    return company
 
+    return enrich_company_output(company)
 
-# Delete a company
+# Delete company
 @app.delete("/companies/{company_id}", status_code=204)
 def delete_company(company_id: int, db: Session = Depends(get_db)):
     company = db.query(Company).get(company_id)
     if not company:
-        raise HTTPException(404, "Company not found")
+        raise HTTPException(404, detail="Company not found")
     db.delete(company)
     db.commit()
-    return
