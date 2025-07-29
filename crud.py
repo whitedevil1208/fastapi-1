@@ -65,7 +65,8 @@ class Employee(Base):
     email = Column(String(255), unique=True, nullable=False)
     password = Column(String(255), nullable=False)
     role = Column(String(100), nullable=False)
-    company_id = Column(Integer, ForeignKey("companies.id"), nullable=False)
+    company = Column(String(255), ForeignKey("companies.name", ondelete="CASCADE"), nullable=False)
+
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -96,7 +97,7 @@ class EmployeeRegister(BaseModel):
     email: EmailStr
     password: str
     role: str
-    company_id: int
+    company_name: str
 
 
 class EmployeeOut(BaseModel):
@@ -104,10 +105,10 @@ class EmployeeOut(BaseModel):
     name: str
     email: EmailStr
     role: str
-    company_id: int
+    company: str  # changed from company_id:int to company:str
 
-    class Config:
-        orm_mode = True
+ class Config:
+    orm_mode = True
 
 
 class EmployeeLogin(BaseModel):
@@ -271,18 +272,30 @@ def register_employee(emp: EmployeeRegister, db: Session = Depends(get_db)):
     if db.query(Employee).filter(Employee.email == emp.email).first():
         raise HTTPException(status_code=400, detail="Employee email already exists")
 
+    # Validate company exists
+    company = db.query(Company).filter(Company.name == emp.company_name).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+
     hashed_password = pwd_context.hash(emp.password)
+
     new_emp = Employee(
         name=emp.name,
         email=emp.email,
         password=hashed_password,
         role=emp.role,
-        company_id=emp.company_id,
+        company=emp.company_name,  # Use company name string
     )
+
     db.add(new_emp)
     db.commit()
     db.refresh(new_emp)
     return new_emp
+
+@app.get("/employees", response_model=List[EmployeeOut])
+def list_employees(db: Session = Depends(get_db)):
+    employees = db.query(Employee).all()
+    return employees
 
 
 @app.post("/employees/login")
