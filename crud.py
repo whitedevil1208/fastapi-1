@@ -107,7 +107,7 @@ class EmployeeOut(BaseModel):
     role: str
     company: str  # changed from company_id:int to company:str
 
- class Config:
+class Config:
     orm_mode = True
 
 
