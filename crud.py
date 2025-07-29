@@ -63,9 +63,9 @@ class Employee(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)
+    password = Column(String(255), nullable=False)  # ✅ Change from password_hash to password
     role = Column(String(100), nullable=False)
-    company = Column(String(255), ForeignKey("companies.name", ondelete="CASCADE"), nullable=False)
+    company = Column(String, ForeignKey("companies.name"), nullable=False)
 
 
 # Create tables
@@ -282,7 +282,7 @@ def register_employee(emp: EmployeeRegister, db: Session = Depends(get_db)):
     new_emp = Employee(
         name=emp.name,
         email=emp.email,
-        password=hashed_password,
+        password_hash=hashed_password,
         role=emp.role,
         company=emp.company_name,  # Use company name string
     )
