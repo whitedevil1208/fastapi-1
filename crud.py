@@ -15,14 +15,12 @@ from sqlalchemy.orm import sessionmaker, Session
 from dotenv import load_dotenv
 from passlib.context import CryptContext
 
-# Load environment variables
+# Load .env
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# FastAPI app
+# App setup
 app = FastAPI()
-
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True,
@@ -34,41 +32,36 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
-# Password hasher
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # -------------------- MODELS --------------------
 
 class Company(Base):
     __tablename__ = "companies"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     phone = Column(String(20), nullable=False)
-    address = Column(Text, nullable=True)
-    city = Column(String(100), nullable=True)
-    state = Column(String(100), nullable=True)
-    country = Column(String(100), nullable=True)
-    branches = Column(Text, nullable=True)
-    certificate_path = Column(String(512), nullable=True)
-    logo_path = Column(String(512), nullable=True)
+    address = Column(Text)
+    city = Column(String(100))
+    state = Column(String(100))
+    country = Column(String(100))
+    branches = Column(Text)
+    certificate_path = Column(String(512))
+    logo_path = Column(String(512))
     is_active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP, server_default=func.now(), nullable=False)
 
 
 class Employee(Base):
     __tablename__ = "employees"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
     email = Column(String(255), unique=True, nullable=False)
-    password = Column(String(255), nullable=False)  # ✅ Change from password_hash to password
+    password = Column(String(255), nullable=False)  # hashed
     role = Column(String(100), nullable=False)
     company = Column(String, ForeignKey("companies.name"), nullable=False)
 
-
-# Create tables
 Base.metadata.create_all(bind=engine)
 
 # -------------------- SCHEMAS --------------------
@@ -105,10 +98,10 @@ class EmployeeOut(BaseModel):
     name: str
     email: EmailStr
     role: str
-    company: str  # changed from company_id:int to company:str
+    company: str
 
-class Config:
-    orm_mode = True
+    class Config:
+        orm_mode = True
 
 
 class EmployeeLogin(BaseModel):
@@ -124,7 +117,6 @@ def get_db():
     finally:
         db.close()
 
-
 def save_upload(file: UploadFile, folder: str) -> str:
     ext = os.path.splitext(file.filename)[1]
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -133,7 +125,6 @@ def save_upload(file: UploadFile, folder: str) -> str:
     with open(path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     return path
-
 
 def enrich_company_output(company: Company) -> CompanyOut:
     return CompanyOut(
@@ -192,14 +183,8 @@ def create_company(
 
 
 @app.get("/companies", response_model=List[CompanyOut])
-def list_companies(
-    x_region: Optional[str] = Depends(lambda: None),
-    db: Session = Depends(get_db),
-):
-    query = db.query(Company)
-    if x_region:
-        query = query.filter(Company.city == x_region)
-    companies = query.all()
+def list_companies(db: Session = Depends(get_db)):
+    companies = db.query(Company).all()
     return [enrich_company_output(c) for c in companies]
 
 
@@ -246,7 +231,6 @@ def update_company(
 
     if branches is not None:
         company.branches = ",".join(branches)
-
     if certificate:
         company.certificate_path = save_upload(certificate, "uploads/certificates")
     if logo:
@@ -265,47 +249,45 @@ def delete_company(company_id: int, db: Session = Depends(get_db)):
     db.delete(company)
     db.commit()
 
+
 # ✅ EMPLOYEE AUTH
 
 @app.post("/employees/register", response_model=EmployeeOut)
 def register_employee(emp: EmployeeRegister, db: Session = Depends(get_db)):
     if db.query(Employee).filter(Employee.email == emp.email).first():
-        raise HTTPException(status_code=400, detail="Employee email already exists")
+        raise HTTPException(400, detail="Employee already exists")
 
-    # Validate company exists
     company = db.query(Company).filter(Company.name == emp.company_name).first()
     if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
+        raise HTTPException(404, detail="Company not found")
 
-    hashed_password = pwd_context.hash(emp.password)
-
+    hashed_pw = pwd_context.hash(emp.password)
     new_emp = Employee(
         name=emp.name,
         email=emp.email,
-        password_hash=hashed_password,
+        password=hashed_pw,
         role=emp.role,
-        company=emp.company_name,  # Use company name string
+        company=emp.company_name,
     )
-
     db.add(new_emp)
     db.commit()
     db.refresh(new_emp)
     return new_emp
-
-@app.get("/employees", response_model=List[EmployeeOut])
-def list_employees(db: Session = Depends(get_db)):
-    employees = db.query(Employee).all()
-    return employees
 
 
 @app.post("/employees/login")
 def login_employee(emp: EmployeeLogin, db: Session = Depends(get_db)):
     employee = db.query(Employee).filter(Employee.email == emp.email).first()
     if not employee or not pwd_context.verify(emp.password, employee.password):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise HTTPException(401, detail="Invalid credentials")
     return {
         "message": "Login successful",
         "employee_id": employee.id,
         "name": employee.name,
         "role": employee.role
     }
+
+
+@app.get("/employees", response_model=List[EmployeeOut])
+def get_employees(db: Session = Depends(get_db)):
+    return db.query(Employee).all()
